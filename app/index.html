@@ -189,6 +189,30 @@ tr:hover td{background:#f8fafc}
 .add-row-btn{display:inline-flex;align-items:center;gap:5px;padding:6px 14px;background:#059669;color:#fff;border:none;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;transition:background .15s}
 .add-row-btn:hover{background:#047857}
 .new-row td{background:#f0fdf4!important;border-top:2px dashed #6ee7b7}
+
+/* ── Alert / Status System ────────────────────── */
+.status-ok  {color:#059669;font-size:15px}
+.status-err {color:#dc2626;font-size:15px}
+.status-neu {color:#f59e0b;font-size:15px}
+.ac-status{position:absolute;top:10px;right:10px;font-size:18px;line-height:1}
+.ac{position:relative}
+.warn-panel{background:#fff7ed;border:1.5px solid #fed7aa;border-radius:10px;padding:14px 18px;margin-bottom:14px}
+.warn-panel-title{font-size:12px;font-weight:700;color:#c2410c;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.warn-item{display:flex;align-items:flex-start;gap:10px;padding:7px 0;border-bottom:1px solid #fed7aa;font-size:12px;color:#7c2d12}
+.warn-item:last-child{border-bottom:none}
+.warn-item .wi-ac{font-weight:700;color:#c2410c;min-width:70px;flex-shrink:0}
+.warn-item .wi-msg{color:#9a3412;line-height:1.5}
+.ok-panel{background:#f0fdf4;border:1.5px solid #bbf7d0;border-radius:10px;padding:10px 16px;margin-bottom:14px;font-size:12px;color:#15803d;display:flex;align-items:center;gap:8px}
+.analysis-block{border-radius:10px;padding:14px 16px;margin-bottom:12px;border-left:4px solid}
+.ab-err{background:#fef2f2;border-left-color:#dc2626}
+.ab-ok {background:#f0fdf4;border-left-color:#059669}
+.ab-warn{background:#fffbeb;border-left-color:#f59e0b}
+.ab-title{font-size:13px;font-weight:700;margin-bottom:6px}
+.ab-body{font-size:12px;color:#475569;line-height:1.8}
+.ab-body strong{color:#1e293b}
+.fix-steps{background:#f8fafc;border-radius:8px;padding:12px 14px;margin-top:10px;font-size:12px;color:#475569;line-height:2}
+.fix-steps ol{padding-left:18px}
+.fix-steps li{margin-bottom:4px}
 </style>
 </head>
 <body>
@@ -320,6 +344,78 @@ function F(v) {
   return n < 0 ? '(' + s + ')' : s;
 }
 function nc(v) { const n = parseFloat(v)||0; return n > 0.005 ? 'vpos' : n < -0.005 ? 'vneg' : 'vzero'; }
+
+// ── Account Status (✅ / ❌ / ⚠️) ──────────────────────────────────────────
+// หลักบัญชี: 1=Asset(Dr), 2=Liability(Cr), 3=Equity(Cr), 4=Revenue(Cr), 5=Expense(Dr)
+function getAccountStatus(a) {
+  const net = a.q1_net;
+  const m   = a.module;
+  const TOL = 0.01;
+
+  if (Math.abs(net) < TOL) {
+    return { ok: 'bal', icon: '✅', label: 'Balanced',
+      color: '#059669', cls: 'ab-ok',
+      title: '✅ Balance สมบูรณ์ — Debit = Credit',
+      reason: 'ยอด Debit และ Credit เท่ากันพอดี ไม่มียอดคงเหลือ',
+      fix: null };
+  }
+
+  // กำหนดว่าบัญชีประเภทนี้ควร Dr หรือ Cr ตามปกติ
+  const expectDr = (m === '1' || m === '5'); // Asset & Expense → normal Dr balance
+  const expectCr = (m === '2' || m === '3' || m === '4'); // Liability, Equity, Revenue → normal Cr balance
+
+  const drExcess = a.q1_dr - a.q1_cr; // positive = Dr มากกว่า
+  const crExcess = a.q1_cr - a.q1_dr; // positive = Cr มากกว่า
+
+  if (expectDr) {
+    if (net > TOL) return { ok: true, icon: '✅', label: 'ปกติ (Net Dr)',
+      color: '#059669', cls: 'ab-ok',
+      title: '✅ ยอดปกติ — Net Debit',
+      reason: `บัญชีประเภทนี้ (${m==='1'?'สินทรัพย์':'ค่าใช้จ่าย'}) มียอด Debit มากกว่า Credit ตามปกติ`,
+      fix: null };
+    // Net < 0 = Credit เกิน = ❌
+    return { ok: false, icon: '❌', label: 'ผิดปกติ',
+      color: '#dc2626', cls: 'ab-err',
+      title: `❌ ผิดปกติ — ${m==='1'?'สินทรัพย์':'ค่าใช้จ่าย'}มียอด Credit เกิน`,
+      reason: `บัญชีนี้ควรมียอด <strong>Debit</strong> (Dr > Cr) แต่ปัจจุบัน Credit มากกว่า Debit อยู่ <strong>${N(Math.abs(net))} บาท</strong>`,
+      drExcess, crExcess,
+      fix: m === '1'
+        ? ['ตรวจสอบรายการ Credit ที่ผิดปกติ — อาจมีการบันทึก Credit ซ้ำหรือเกินจำนวน',
+           `หา Journal ที่มียอด Credit รวมสูงผิดปกติ แล้วยืนยันกับเอกสารต้นฉบับ`,
+           `ยอดที่ต้องหาและแก้ไข: Credit เกิน ${N(Math.abs(net))} บาท`,
+           'ถ้าแก้ไขไม่ได้ ให้ทำ Journal Adjustment: Dr บัญชีนี้ / Cr บัญชีพักหรือ Adjustment']
+        : ['ตรวจสอบว่ามีการบันทึก Credit ค่าใช้จ่ายสูงผิดปกติหรือไม่',
+           `ยอดที่ต้องหาและแก้ไข: Credit เกิน ${N(Math.abs(net))} บาท`,
+           'อาจเกิดจากการ reverse รายการค่าใช้จ่าย หรือ Credit Note ที่ผิด Journal'] };
+  }
+
+  if (expectCr) {
+    if (net < -TOL) return { ok: true, icon: '✅', label: 'ปกติ (Net Cr)',
+      color: '#059669', cls: 'ab-ok',
+      title: '✅ ยอดปกติ — Net Credit',
+      reason: `บัญชีประเภทนี้ (${m==='2'?'หนี้สิน':m==='3'?'ทุน':'รายได้'}) มียอด Credit มากกว่า Debit ตามปกติ`,
+      fix: null };
+    // Net > 0 = Debit เกิน = ❌
+    const typeName = m==='2'?'หนี้สิน':m==='3'?'ทุน':'รายได้';
+    return { ok: false, icon: '❌', label: 'ผิดปกติ',
+      color: '#dc2626', cls: 'ab-err',
+      title: `❌ ผิดปกติ — ${typeName}มียอด Debit เกิน`,
+      reason: `บัญชีนี้ควรมียอด <strong>Credit</strong> (Cr > Dr) แต่ปัจจุบัน Debit มากกว่า Credit อยู่ <strong>${N(Math.abs(net))} บาท</strong>`,
+      drExcess, crExcess,
+      fix: m === '4'
+        ? ['ตรวจสอบว่ามีการ reverse รายได้หรือบันทึก Debit รายได้ผิดหรือไม่',
+           `ยอดที่ต้องหาและแก้ไข: Debit เกิน ${N(Math.abs(net))} บาท`,
+           'อาจเกิดจาก Credit Note ลูกค้า หรือการยกเลิกรายได้ที่บันทึกผิด',
+           'ถ้าถูกต้อง ให้ตรวจสอบว่ารายได้บางส่วนยังไม่ได้บันทึก']
+        : ['ตรวจสอบรายการ Debit ในบัญชีหนี้สิน/ทุนที่ผิดปกติ',
+           `ยอดที่ต้องหาและแก้ไข: Debit เกิน ${N(Math.abs(net))} บาท`,
+           'อาจเกิดจากการจ่ายชำระหนี้เกินจำนวน หรือ Journal ที่บันทึกผิด',
+           'ถ้าแก้ไขไม่ได้ ให้ทำ Journal Adjustment: Cr บัญชีนี้ / Dr บัญชี Adjustment'] };
+  }
+
+  return { ok: 'bal', icon: '✅', label: 'ปกติ', color:'#059669', cls:'ab-ok',
+    title:'✅ ยอดปกติ', reason:'', fix:null };
+}
 function fDate(v) {
   if (!v && v !== 0) return '—';
   if (v instanceof Date) return v.toLocaleDateString('th-TH', {day:'2-digit',month:'2-digit',year:'numeric'});
@@ -554,12 +650,34 @@ function renderMod(mk) {
   if (CB === 'dr')    list = list.slice().sort((a,b) => b.q1_dr - a.q1_dr);
   if (CB === 'cr')    list = list.slice().sort((a,b) => b.q1_cr - a.q1_cr);
 
+  // Warning Panel — accounts with issues
+  const errAcs = list.filter(a => getAccountStatus(a).ok === false);
+  const balAcs = list.filter(a => getAccountStatus(a).ok === true || getAccountStatus(a).ok === 'bal');
+  if (errAcs.length > 0) {
+    h += `<div class="warn-panel">
+      <div class="warn-panel-title">❌ พบ ${errAcs.length} Account ที่มียอดผิดปกติ — ต้องตรวจสอบ</div>`;
+    errAcs.forEach(a => {
+      const st = getAccountStatus(a);
+      h += `<div class="warn-item">
+        <span class="wi-ac">${esc(a.account)}</span>
+        <span class="wi-msg"><strong>${esc(a.name)||'(ไม่มีชื่อ)'}</strong><br>${st.reason}</span>
+      </div>`;
+    });
+    h += `</div>`;
+  }
+  if (errAcs.length === 0 && list.length > 0) {
+    h += `<div class="ok-panel">✅ &nbsp;<strong>ทุก Account ในหมวดนี้มียอดปกติ</strong> — ไม่พบรายการผิดปกติ</div>`;
+  }
+
   h += '<div class="ag">';
   list.forEach(a => {
     const cnt = (DET[a.account]||[]).length;
+    const st  = getAccountStatus(a);
     const nb  = a.q1_net > 0.005 ? 'bp' : a.q1_net < -0.005 ? 'bn' : 'bz';
     const nl  = a.q1_net > 0.005 ? 'Net Dr' : a.q1_net < -0.005 ? 'Net Cr' : 'Balanced';
-    h += `<div class="ac" onclick="openA('${esc(a.account)}')">
+    const borderStyle = st.ok === false ? 'border:1.5px solid #fca5a5;' : st.ok === 'bal' ? 'border:1.5px solid #bbf7d0;' : '';
+    h += `<div class="ac" onclick="openA('${esc(a.account)}')" style="${borderStyle}">
+      <span class="ac-status" title="${st.title}">${st.icon}</span>
       <div class="ach">
         <div class="ano">${esc(a.account)}</div>
         <div class="aname">${esc(a.name)||'(ไม่มีชื่อ)'}</div>
@@ -570,7 +688,7 @@ function renderMod(mk) {
         <div class="acni"><label>Net</label><div class="num ${nc(a.q1_net)}">${N(a.q1_net)}</div></div>
       </div></div>
       <div class="acf">
-        <span class="badge ${nb}">${nl}</span>
+        <span class="badge ${nb}">${st.icon} ${nl}</span>
         <span class="cnt">${cnt.toLocaleString('th-TH')} รายการ</span>
       </div>
     </div>`;
@@ -590,8 +708,10 @@ function openA(acno) {
   CA = SUM.find(a => a.account === acno);
   if (!CA) return;
   CP = 0; CS = '';
+  const _st = getAccountStatus(CA);
   document.getElementById('dr-acno').textContent   = CA.account;
-  document.getElementById('dr-acname').textContent = CA.name || '(ไม่มีชื่อ)';
+  document.getElementById('dr-acname').innerHTML   =
+    `${esc(CA.name)||'(ไม่มีชื่อ)'} <span style="font-size:18px;vertical-align:middle" title="${_st.title}">${_st.icon}</span>`;
   document.getElementById('ov').classList.add('open');
   document.getElementById('drawer').classList.add('open');
   // Reset to first tab
@@ -863,18 +983,35 @@ function renderAnalysis() {
   const drT  = a.q1_dr;
   const crT  = a.q1_cr;
 
+  const st = getAccountStatus(a);
   let h = '';
 
-  // Balance status
-  if (Math.abs(net) < 0.01) {
-    h += `<div class="ibox io"><div class="it">✅ Balance สมบูรณ์</div>
-      <div class="itx">Debit และ Credit เท่ากัน — Account นี้ไม่มียอดคงเหลือ</div></div>`;
-  } else if (net > 0) {
-    h += `<div class="ibox"><div class="it">📥 Net Debit: ${N(net)}</div>
-      <div class="itx">Account มียอด Debit มากกว่า Credit อยู่ <strong>${N(net)}</strong> บาท</div></div>`;
-  } else {
-    h += `<div class="ibox iw"><div class="it">📤 Net Credit: ${N(Math.abs(net))}</div>
-      <div class="itx">Account มียอด Credit มากกว่า Debit อยู่ <strong>${N(Math.abs(net))}</strong> บาท</div></div>`;
+  // ── Status Block ──────────────────────────────────────────────────────────
+  h += `<div class="analysis-block ${st.cls}" style="margin-bottom:16px">
+    <div class="ab-title" style="color:${st.color}">${st.title}</div>
+    <div class="ab-body">${st.reason}</div>`;
+
+  if (st.ok === false && st.fix) {
+    h += `<div class="fix-steps">
+      <strong style="color:#1e293b">🔧 วิธีตรวจสอบและแก้ไข:</strong>
+      <ol>${st.fix.map(f=>`<li>${f}</li>`).join('')}</ol>
+    </div>`;
+  }
+  h += `</div>`;
+
+  // ── Debit vs Credit Gap ────────────────────────────────────────────────────
+  if (Math.abs(net) > 0.01) {
+    const gapSide   = net > 0 ? 'Debit' : 'Credit';
+    const otherSide = net > 0 ? 'Credit' : 'Debit';
+    const pct = drT && crT ? ((Math.max(drT,crT)/Math.min(drT,crT)-1)*100).toFixed(2) : '—';
+    h += `<div class="analysis-block ab-warn" style="margin-bottom:16px">
+      <div class="ab-title" style="color:#b45309">📐 ขนาดของความต่าง</div>
+      <div class="ab-body">
+        <strong>${gapSide}</strong> มากกว่า <strong>${otherSide}</strong> อยู่ <strong style="color:#dc2626">${N(Math.abs(net))} บาท</strong> (${pct}%)<br>
+        Dr รวม: <strong class="vdr">${N(drT)}</strong> &nbsp;|&nbsp; Cr รวม: <strong class="vcr">${N(crT)}</strong><br>
+        รายการทั้งหมด: ${allTx.length.toLocaleString('th-TH')} รายการ
+      </div>
+    </div>`;
   }
 
   // Statistics
