@@ -213,6 +213,8 @@ tr:hover td{background:#f8fafc}
 .fix-steps{background:#f8fafc;border-radius:8px;padding:12px 14px;margin-top:10px;font-size:12px;color:#475569;line-height:2}
 .fix-steps ol{padding-left:18px}
 .fix-steps li{margin-bottom:4px}
+.warn-item:hover{background:rgba(194,65,12,.06);border-radius:6px}
+.warn-panel-title:hover{opacity:.85}
 </style>
 </head>
 <body>
@@ -345,13 +347,40 @@ function F(v) {
 }
 function nc(v) { const n = parseFloat(v)||0; return n > 0.005 ? 'vpos' : n < -0.005 ? 'vneg' : 'vzero'; }
 
-// ── Account Status (✅ / ❌ / ⚠️) ──────────────────────────────────────────
-// หลักบัญชี: 1=Asset(Dr), 2=Liability(Cr), 3=Equity(Cr), 4=Revenue(Cr), 5=Expense(Dr)
-function getAccountStatus(a) {
-  const net = a.q1_net;
-  const m   = a.module;
-  const TOL = 0.01;
+// ── Contra Asset Detection ────────────────────────────────────────────────
+// บัญชีที่มียอด Credit ปกติ แม้อยู่ในหมวดสินทรัพย์ (Contra Asset)
+// เช่น ค่าเสื่อมราคาสะสม, หนี้สงสัยจะสูญสะสม
+function isContraAsset(a) {
+  const name = (a.name || '').toLowerCase();
+  const acct = String(a.account || '');
+  // ตรวจจากชื่อบัญชี
+  if (name.includes('สะสม'))            return true; // ค่าเสื่อมราคาสะสม, หนี้สงสัยจะสูญสะสม
+  if (name.includes('ค่าเสื่อมราคา'))   return true;
+  if (name.includes('เผื่อหนี้'))       return true; // เผื่อหนี้สงสัยจะสูญ
+  if (name.includes('หักค่า'))          return true;
+  if (name.includes('accumulated'))     return true;
+  if (name.includes('allowance'))       return true;
+  if (name.includes('depreciation'))    return true;
+  // ตรวจจากรหัสบัญชี (142xxx = ค่าเสื่อมราคาสะสมสินทรัพย์ถาวร)
+  if (/^142\d{3}$/.test(acct))          return true;
+  if (/^1[2-9]\d{4}$/.test(acct) && name.includes('สะสม')) return true;
+  return false;
+}
 
+// ── Account Status (✅ / ❌) ───────────────────────────────────────────────
+// หลักบัญชี:
+//   หมวด 1 สินทรัพย์         → ปกติ Debit  (ยกเว้น Contra Asset → ปกติ Credit)
+//   หมวด 2 หนี้สิน           → ปกติ Credit
+//   หมวด 3 ทุน               → ปกติ Credit
+//   หมวด 4 รายได้            → ปกติ Credit
+//   หมวด 5-9 ค่าใช้จ่าย      → ปกติ Debit
+function getAccountStatus(a) {
+  const net  = a.q1_net;
+  const m    = a.module;
+  const TOL  = 0.01;
+  const contra = (m === '1') && isContraAsset(a);
+
+  // Balanced
   if (Math.abs(net) < TOL) {
     return { ok: 'bal', icon: '✅', label: 'Balanced',
       color: '#059669', cls: 'ab-ok',
@@ -360,61 +389,72 @@ function getAccountStatus(a) {
       fix: null };
   }
 
-  // กำหนดว่าบัญชีประเภทนี้ควร Dr หรือ Cr ตามปกติ
-  const expectDr = (m === '1' || m === '5'); // Asset & Expense → normal Dr balance
-  const expectCr = (m === '2' || m === '3' || m === '4'); // Liability, Equity, Revenue → normal Cr balance
-
-  const drExcess = a.q1_dr - a.q1_cr; // positive = Dr มากกว่า
-  const crExcess = a.q1_cr - a.q1_dr; // positive = Cr มากกว่า
-
-  if (expectDr) {
-    if (net > TOL) return { ok: true, icon: '✅', label: 'ปกติ (Net Dr)',
+  // ── Contra Asset (ค่าเสื่อมราคาสะสม ฯลฯ) → ปกติ Credit ──────────────
+  if (contra) {
+    if (net < -TOL) return { ok: true, icon: '✅', label: 'ปกติ (Contra Cr)',
       color: '#059669', cls: 'ab-ok',
-      title: '✅ ยอดปกติ — Net Debit',
-      reason: `บัญชีประเภทนี้ (${m==='1'?'สินทรัพย์':'ค่าใช้จ่าย'}) มียอด Debit มากกว่า Credit ตามปกติ`,
+      title: '✅ ยอดปกติ — Contra Asset (Credit Balance)',
+      reason: 'ค่าเสื่อมราคาสะสม / บัญชีหักลบสินทรัพย์ มียอด <strong>Credit</strong> ตามปกติในหลักบัญชี',
       fix: null };
-    // Net < 0 = Credit เกิน = ❌
     return { ok: false, icon: '❌', label: 'ผิดปกติ',
       color: '#dc2626', cls: 'ab-err',
-      title: `❌ ผิดปกติ — ${m==='1'?'สินทรัพย์':'ค่าใช้จ่าย'}มียอด Credit เกิน`,
-      reason: `บัญชีนี้ควรมียอด <strong>Debit</strong> (Dr > Cr) แต่ปัจจุบัน Credit มากกว่า Debit อยู่ <strong>${N(Math.abs(net))} บาท</strong>`,
-      drExcess, crExcess,
-      fix: m === '1'
-        ? ['ตรวจสอบรายการ Credit ที่ผิดปกติ — อาจมีการบันทึก Credit ซ้ำหรือเกินจำนวน',
-           `หา Journal ที่มียอด Credit รวมสูงผิดปกติ แล้วยืนยันกับเอกสารต้นฉบับ`,
-           `ยอดที่ต้องหาและแก้ไข: Credit เกิน ${N(Math.abs(net))} บาท`,
-           'ถ้าแก้ไขไม่ได้ ให้ทำ Journal Adjustment: Dr บัญชีนี้ / Cr บัญชีพักหรือ Adjustment']
-        : ['ตรวจสอบว่ามีการบันทึก Credit ค่าใช้จ่ายสูงผิดปกติหรือไม่',
-           `ยอดที่ต้องหาและแก้ไข: Credit เกิน ${N(Math.abs(net))} บาท`,
-           'อาจเกิดจากการ reverse รายการค่าใช้จ่าย หรือ Credit Note ที่ผิด Journal'] };
+      title: '❌ ผิดปกติ — Contra Asset มียอด Debit เกิน',
+      reason: `ค่าเสื่อมราคาสะสมควรมียอด <strong>Credit</strong> แต่ปัจจุบัน Debit มากกว่า Credit อยู่ <strong>${N(Math.abs(net))} บาท</strong>`,
+      fix: ['ตรวจสอบว่ามีการบันทึกค่าเสื่อมราคาสะสมถูกทาง (ควร Cr) หรือไม่',
+            `ยอดที่ต้องหาและแก้ไข: Debit เกิน ${N(Math.abs(net))} บาท`,
+            'อาจเกิดจากการ reverse ค่าเสื่อมหรือตัดจำหน่ายสินทรัพย์ที่บันทึกผิดด้าน',
+            'ทำ Journal Adjustment: Cr ค่าเสื่อมราคาสะสม / Dr ค่าเสื่อมราคา'] };
   }
 
-  if (expectCr) {
+  // ── Asset & Expense → ปกติ Debit ────────────────────────────────────────
+  if (m === '1' || m === '5') {
+    const typeName = m === '1' ? 'สินทรัพย์' : 'ค่าใช้จ่าย';
+    if (net > TOL) return { ok: true, icon: '✅', label: 'ปกติ (Net Dr)',
+      color: '#059669', cls: 'ab-ok',
+      title: `✅ ยอดปกติ — ${typeName}มียอด Debit`,
+      reason: `บัญชี${typeName}มียอด <strong>Debit</strong> มากกว่า Credit ตามหลักบัญชีที่ถูกต้อง`,
+      fix: null };
+    // Credit เกิน = ❌
+    return { ok: false, icon: '❌', label: 'ผิดปกติ',
+      color: '#dc2626', cls: 'ab-err',
+      title: `❌ ผิดปกติ — ${typeName}มียอด Credit เกิน`,
+      reason: `บัญชี${typeName}ควรมียอด <strong>Debit</strong> (Dr > Cr) แต่ปัจจุบัน Credit มากกว่า Debit อยู่ <strong>${N(Math.abs(net))} บาท</strong>`,
+      fix: m === '1'
+        ? [`ตรวจสอบรายการ Credit ที่ผิดปกติ — อาจมีการบันทึก Credit ซ้ำหรือเกินจำนวน`,
+           `หา Journal ที่มียอด Credit สูงผิดปกติ แล้วยืนยันกับเอกสารต้นฉบับ`,
+           `ยอดที่ต้องหาและแก้ไข: Credit เกิน ${N(Math.abs(net))} บาท`,
+           'ทำ Journal Adjustment (ถ้าจำเป็น): Dr บัญชีนี้ / Cr บัญชี Adjustment']
+        : [`ตรวจสอบว่ามีการบันทึก Credit ค่าใช้จ่ายสูงผิดปกติหรือไม่`,
+           `ยอดที่ต้องหาและแก้ไข: Credit เกิน ${N(Math.abs(net))} บาท`,
+           'อาจเกิดจาก Reverse รายการค่าใช้จ่าย หรือ Credit Note ที่บันทึกผิด Journal'] };
+  }
+
+  // ── Liability / Equity / Revenue → ปกติ Credit ──────────────────────────
+  if (m === '2' || m === '3' || m === '4') {
+    const typeName = m==='2'?'หนี้สิน': m==='3'?'ทุน':'รายได้';
     if (net < -TOL) return { ok: true, icon: '✅', label: 'ปกติ (Net Cr)',
       color: '#059669', cls: 'ab-ok',
-      title: '✅ ยอดปกติ — Net Credit',
-      reason: `บัญชีประเภทนี้ (${m==='2'?'หนี้สิน':m==='3'?'ทุน':'รายได้'}) มียอด Credit มากกว่า Debit ตามปกติ`,
+      title: `✅ ยอดปกติ — ${typeName}มียอด Credit`,
+      reason: `บัญชี${typeName}มียอด <strong>Credit</strong> มากกว่า Debit ตามหลักบัญชีที่ถูกต้อง`,
       fix: null };
-    // Net > 0 = Debit เกิน = ❌
-    const typeName = m==='2'?'หนี้สิน':m==='3'?'ทุน':'รายได้';
+    // Debit เกิน = ❌
     return { ok: false, icon: '❌', label: 'ผิดปกติ',
       color: '#dc2626', cls: 'ab-err',
       title: `❌ ผิดปกติ — ${typeName}มียอด Debit เกิน`,
-      reason: `บัญชีนี้ควรมียอด <strong>Credit</strong> (Cr > Dr) แต่ปัจจุบัน Debit มากกว่า Credit อยู่ <strong>${N(Math.abs(net))} บาท</strong>`,
-      drExcess, crExcess,
+      reason: `บัญชี${typeName}ควรมียอด <strong>Credit</strong> (Cr > Dr) แต่ปัจจุบัน Debit มากกว่า Credit อยู่ <strong>${N(Math.abs(net))} บาท</strong>`,
       fix: m === '4'
-        ? ['ตรวจสอบว่ามีการ reverse รายได้หรือบันทึก Debit รายได้ผิดหรือไม่',
+        ? [`ตรวจสอบว่ามีการ Reverse รายได้หรือบันทึก Debit รายได้ผิดหรือไม่`,
            `ยอดที่ต้องหาและแก้ไข: Debit เกิน ${N(Math.abs(net))} บาท`,
            'อาจเกิดจาก Credit Note ลูกค้า หรือการยกเลิกรายได้ที่บันทึกผิด',
-           'ถ้าถูกต้อง ให้ตรวจสอบว่ารายได้บางส่วนยังไม่ได้บันทึก']
-        : ['ตรวจสอบรายการ Debit ในบัญชีหนี้สิน/ทุนที่ผิดปกติ',
+           'ตรวจสอบว่ารายได้ที่ถูกต้องถูกบันทึกครบถ้วนแล้วหรือไม่']
+        : [`ตรวจสอบรายการ Debit ในบัญชี${typeName}ที่ผิดปกติ`,
            `ยอดที่ต้องหาและแก้ไข: Debit เกิน ${N(Math.abs(net))} บาท`,
-           'อาจเกิดจากการจ่ายชำระหนี้เกินจำนวน หรือ Journal ที่บันทึกผิด',
-           'ถ้าแก้ไขไม่ได้ ให้ทำ Journal Adjustment: Cr บัญชีนี้ / Dr บัญชี Adjustment'] };
+           'อาจเกิดจากการจ่ายชำระหนี้เกินจำนวน หรือ Journal ที่บันทึกผิดด้าน',
+           'ทำ Journal Adjustment (ถ้าจำเป็น): Cr บัญชีนี้ / Dr บัญชี Adjustment'] };
   }
 
-  return { ok: 'bal', icon: '✅', label: 'ปกติ', color:'#059669', cls:'ab-ok',
-    title:'✅ ยอดปกติ', reason:'', fix:null };
+  return { ok: true, icon: '✅', label: 'ปกติ', color:'#059669', cls:'ab-ok',
+    title:'✅ ยอดปกติ', reason:'ยอดอยู่ในเกณฑ์ปกติ', fix:null };
 }
 function fDate(v) {
   if (!v && v !== 0) return '—';
@@ -650,20 +690,25 @@ function renderMod(mk) {
   if (CB === 'dr')    list = list.slice().sort((a,b) => b.q1_dr - a.q1_dr);
   if (CB === 'cr')    list = list.slice().sort((a,b) => b.q1_cr - a.q1_cr);
 
-  // Warning Panel — accounts with issues
+  // Warning Panel — collapsible
   const errAcs = list.filter(a => getAccountStatus(a).ok === false);
-  const balAcs = list.filter(a => getAccountStatus(a).ok === true || getAccountStatus(a).ok === 'bal');
+  const wpId   = 'wp-' + mk;
   if (errAcs.length > 0) {
     h += `<div class="warn-panel">
-      <div class="warn-panel-title">❌ พบ ${errAcs.length} Account ที่มียอดผิดปกติ — ต้องตรวจสอบ</div>`;
+      <div class="warn-panel-title" onclick="toggleWarnPanel('${wpId}')" style="cursor:pointer;user-select:none;justify-content:space-between">
+        <span>❌ พบ ${errAcs.length} Account ที่มียอดผิดปกติ — ต้องตรวจสอบ</span>
+        <span id="${wpId}-icon" style="font-size:14px;transition:transform .2s">▼</span>
+      </div>
+      <div id="${wpId}" style="overflow:hidden;transition:max-height .3s ease">`;
     errAcs.forEach(a => {
       const st = getAccountStatus(a);
-      h += `<div class="warn-item">
+      h += `<div class="warn-item" onclick="openA('${esc(a.account)}')" style="cursor:pointer" title="คลิกเพื่อดูรายละเอียด">
         <span class="wi-ac">${esc(a.account)}</span>
         <span class="wi-msg"><strong>${esc(a.name)||'(ไม่มีชื่อ)'}</strong><br>${st.reason}</span>
+        <span style="color:#c2410c;font-size:11px;flex-shrink:0;margin-left:8px">ดูรายละเอียด →</span>
       </div>`;
     });
-    h += `</div>`;
+    h += `</div></div>`;
   }
   if (errAcs.length === 0 && list.length > 0) {
     h += `<div class="ok-panel">✅ &nbsp;<strong>ทุก Account ในหมวดนี้มียอดปกติ</strong> — ไม่พบรายการผิดปกติ</div>`;
@@ -1050,6 +1095,26 @@ function renderAnalysis() {
   }
 
   document.getElementById('dtc4').innerHTML = h;
+}
+
+// ══ Toggle Warning Panel ═════════════════════════════════════════════════════
+const _wpOpen = {};
+function toggleWarnPanel(id) {
+  const el   = document.getElementById(id);
+  const icon = document.getElementById(id + '-icon');
+  if (!el) return;
+  if (_wpOpen[id] === false) {
+    // expand
+    el.style.maxHeight = el.scrollHeight + 'px';
+    if (icon) icon.style.transform = 'rotate(0deg)';
+    _wpOpen[id] = true;
+  } else {
+    // collapse
+    el.style.maxHeight = el.scrollHeight + 'px'; // set explicit first
+    requestAnimationFrame(() => { el.style.maxHeight = '0px'; });
+    if (icon) icon.style.transform = 'rotate(-90deg)';
+    _wpOpen[id] = false;
+  }
 }
 
 // ══ Edit Mode ════════════════════════════════════════════════════════════════
