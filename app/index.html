@@ -348,39 +348,38 @@ function F(v) {
 function nc(v) { const n = parseFloat(v)||0; return n > 0.005 ? 'vpos' : n < -0.005 ? 'vneg' : 'vzero'; }
 
 // ── Contra Asset Detection ────────────────────────────────────────────────
-// บัญชีที่มียอด Credit ปกติ แม้อยู่ในหมวดสินทรัพย์ (Contra Asset)
-// เช่น ค่าเสื่อมราคาสะสม, หนี้สงสัยจะสูญสะสม, เผื่อการด้อยค่า
+// บัญชีหักลบสินทรัพย์ เช่น ค่าเสื่อมราคาสะสม, เผื่อหนี้สงสัยจะสูญ
+// ตรวจด้วย รหัสบัญชี (แม่นยำสุด) + ชื่อบัญชี (สำรอง)
 function isContraAsset(a) {
-  const name = (a.name || '');           // เก็บ original ไว้ด้วย
-  const low  = name.toLowerCase();
-  const acct = String(a.account || '');
+  const acct = String(a.account || '').trim();
+  const name = String(a.name   || '');
 
-  // ── ตรวจจากชื่อบัญชี (ภาษาไทย) ──────────────────────────────────────
-  const thaiKeywords = [
-    'สะสม',          // ค่าเสื่อมราคาสะสม, หนี้สงสัยจะสูญสะสม
-    'เสื่อมราคา',    // ค่าเสื่อมราคา (บางบริษัทไม่ใส่คำว่า "สะสม")
-    'เผื่อ',         // เผื่อหนี้สงสัยจะสูญ, เผื่อการด้อยค่า
-    'หักค่า',        // หักค่าเสื่อมราคา
-    'ตัดบัญชี',      // ค่าตัดบัญชีสะสม
-    'ด้อยค่า',       // การด้อยค่าสะสม
-  ];
-  for (const kw of thaiKeywords) {
-    if (name.includes(kw)) return true;
-  }
+  // ── 1) ตรวจรหัสบัญชี (ไม่ขึ้นกับ encoding ชื่อ) ──────────────────────
+  // 142xxx = ค่าเสื่อมราคาสะสมสินทรัพย์ถาวร (พบบ่อยที่สุด)
+  if (acct.indexOf('142') === 0) return true;
+  // 144xxx = ค่าเสื่อมราคาสะสมสินทรัพย์ไม่มีตัวตน / สิทธิ์สะสม
+  if (acct.indexOf('144') === 0) return true;
+  // 146xxx, 148xxx = ค่าเสื่อมราคาสะสมกลุ่มอื่น
+  if (acct.indexOf('146') === 0) return true;
+  if (acct.indexOf('148') === 0) return true;
+  // 112xxx บางตัว = เผื่อหนี้สงสัยจะสูญ (ลูกหนี้)
+  if (acct.indexOf('1129') === 0) return true;
+  if (acct.indexOf('1139') === 0) return true;
 
-  // ── ตรวจจากชื่อบัญชี (อังกฤษ) ────────────────────────────────────────
-  const engKeywords = [
-    'accumulated', 'allowance', 'depreciation',
-    'provision', 'impairment', 'amortization', 'amortisation'
-  ];
-  for (const kw of engKeywords) {
-    if (low.includes(kw)) return true;
-  }
-
-  // ── ตรวจจากรหัสบัญชีที่พบบ่อยในระบบบัญชีไทย ──────────────────────────
-  // 141xx–149xx = สินทรัพย์ถาวร ส่วนที่เป็น accumulated depreciation มักลงท้ายด้วยเลขคู่
-  // 142xxx, 144xxx, 146xxx = กลุ่มค่าเสื่อมราคาสะสมทั่วไป
-  if (/^14[2468]\d{3}$/.test(acct)) return true;
+  // ── 2) ตรวจชื่อบัญชี (ใช้ indexOf แทน includes เพื่อ compatibility) ──
+  // ภาษาไทย
+  if (name.indexOf('สะสม') >= 0) return true;  // สะสม
+  if (name.indexOf('เสื่อมราคา') >= 0) return true; // เสื่อมราคา
+  if (name.indexOf('เผื่อ') >= 0) return true; // เผื่อ
+  if (name.indexOf('หักค่า') >= 0) return true; // หักค่า
+  if (name.indexOf('ด้อยค่า') >= 0) return true; // ด้อยค่า
+  // ภาษาอังกฤษ (lowercase)
+  const low = name.toLowerCase();
+  if (low.indexOf('accum')     >= 0) return true;
+  if (low.indexOf('deprec')    >= 0) return true;
+  if (low.indexOf('allowance') >= 0) return true;
+  if (low.indexOf('provision') >= 0) return true;
+  if (low.indexOf('impair')    >= 0) return true;
 
   return false;
 }
