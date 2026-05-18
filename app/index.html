@@ -349,21 +349,39 @@ function nc(v) { const n = parseFloat(v)||0; return n > 0.005 ? 'vpos' : n < -0.
 
 // ── Contra Asset Detection ────────────────────────────────────────────────
 // บัญชีที่มียอด Credit ปกติ แม้อยู่ในหมวดสินทรัพย์ (Contra Asset)
-// เช่น ค่าเสื่อมราคาสะสม, หนี้สงสัยจะสูญสะสม
+// เช่น ค่าเสื่อมราคาสะสม, หนี้สงสัยจะสูญสะสม, เผื่อการด้อยค่า
 function isContraAsset(a) {
-  const name = (a.name || '').toLowerCase();
+  const name = (a.name || '');           // เก็บ original ไว้ด้วย
+  const low  = name.toLowerCase();
   const acct = String(a.account || '');
-  // ตรวจจากชื่อบัญชี
-  if (name.includes('สะสม'))            return true; // ค่าเสื่อมราคาสะสม, หนี้สงสัยจะสูญสะสม
-  if (name.includes('ค่าเสื่อมราคา'))   return true;
-  if (name.includes('เผื่อหนี้'))       return true; // เผื่อหนี้สงสัยจะสูญ
-  if (name.includes('หักค่า'))          return true;
-  if (name.includes('accumulated'))     return true;
-  if (name.includes('allowance'))       return true;
-  if (name.includes('depreciation'))    return true;
-  // ตรวจจากรหัสบัญชี (142xxx = ค่าเสื่อมราคาสะสมสินทรัพย์ถาวร)
-  if (/^142\d{3}$/.test(acct))          return true;
-  if (/^1[2-9]\d{4}$/.test(acct) && name.includes('สะสม')) return true;
+
+  // ── ตรวจจากชื่อบัญชี (ภาษาไทย) ──────────────────────────────────────
+  const thaiKeywords = [
+    'สะสม',          // ค่าเสื่อมราคาสะสม, หนี้สงสัยจะสูญสะสม
+    'เสื่อมราคา',    // ค่าเสื่อมราคา (บางบริษัทไม่ใส่คำว่า "สะสม")
+    'เผื่อ',         // เผื่อหนี้สงสัยจะสูญ, เผื่อการด้อยค่า
+    'หักค่า',        // หักค่าเสื่อมราคา
+    'ตัดบัญชี',      // ค่าตัดบัญชีสะสม
+    'ด้อยค่า',       // การด้อยค่าสะสม
+  ];
+  for (const kw of thaiKeywords) {
+    if (name.includes(kw)) return true;
+  }
+
+  // ── ตรวจจากชื่อบัญชี (อังกฤษ) ────────────────────────────────────────
+  const engKeywords = [
+    'accumulated', 'allowance', 'depreciation',
+    'provision', 'impairment', 'amortization', 'amortisation'
+  ];
+  for (const kw of engKeywords) {
+    if (low.includes(kw)) return true;
+  }
+
+  // ── ตรวจจากรหัสบัญชีที่พบบ่อยในระบบบัญชีไทย ──────────────────────────
+  // 141xx–149xx = สินทรัพย์ถาวร ส่วนที่เป็น accumulated depreciation มักลงท้ายด้วยเลขคู่
+  // 142xxx, 144xxx, 146xxx = กลุ่มค่าเสื่อมราคาสะสมทั่วไป
+  if (/^14[2468]\d{3}$/.test(acct)) return true;
+
   return false;
 }
 
@@ -389,21 +407,17 @@ function getAccountStatus(a) {
       fix: null };
   }
 
-  // ── Contra Asset (ค่าเสื่อมราคาสะสม ฯลฯ) → ปกติ Credit ──────────────
+  // ── Contra Asset → ✅ เสมอ ──────────────────────────────────────────────
+  // ค่าเสื่อมราคาสะสม, เผื่อหนี้สงสัยจะสูญ ฯลฯ
+  // ยอดในแต่ละงวดอาจ Dr หรือ Cr ได้ขึ้นกับการตัดจำหน่าย/โอนสินทรัพย์
+  // → ไม่ถือว่าผิดปกติ ให้แสดง ✅ เสมอ
   if (contra) {
-    if (net < -TOL) return { ok: true, icon: '✅', label: 'ปกติ (Contra Cr)',
+    const dir = net < -TOL ? 'Credit' : net > TOL ? 'Debit' : 'Balanced';
+    return { ok: true, icon: '✅', label: 'ปกติ (Contra Asset)',
       color: '#059669', cls: 'ab-ok',
-      title: '✅ ยอดปกติ — Contra Asset (Credit Balance)',
-      reason: 'ค่าเสื่อมราคาสะสม / บัญชีหักลบสินทรัพย์ มียอด <strong>Credit</strong> ตามปกติในหลักบัญชี',
+      title: '✅ ยอดปกติ — Contra Asset (บัญชีหักลบสินทรัพย์)',
+      reason: `ค่าเสื่อมราคาสะสม / บัญชีหักลบสินทรัพย์ — มียอด Net ${dir} ซึ่งปกติตามหลักบัญชี`,
       fix: null };
-    return { ok: false, icon: '❌', label: 'ผิดปกติ',
-      color: '#dc2626', cls: 'ab-err',
-      title: '❌ ผิดปกติ — Contra Asset มียอด Debit เกิน',
-      reason: `ค่าเสื่อมราคาสะสมควรมียอด <strong>Credit</strong> แต่ปัจจุบัน Debit มากกว่า Credit อยู่ <strong>${N(Math.abs(net))} บาท</strong>`,
-      fix: ['ตรวจสอบว่ามีการบันทึกค่าเสื่อมราคาสะสมถูกทาง (ควร Cr) หรือไม่',
-            `ยอดที่ต้องหาและแก้ไข: Debit เกิน ${N(Math.abs(net))} บาท`,
-            'อาจเกิดจากการ reverse ค่าเสื่อมหรือตัดจำหน่ายสินทรัพย์ที่บันทึกผิดด้าน',
-            'ทำ Journal Adjustment: Cr ค่าเสื่อมราคาสะสม / Dr ค่าเสื่อมราคา'] };
   }
 
   // ── Asset & Expense → ปกติ Debit ────────────────────────────────────────
